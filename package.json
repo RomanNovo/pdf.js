@@ -39,7 +39,7 @@
     "vinyl-fs": "^3.0.3",
     "webpack": "^4.20.2",
     "webpack-stream": "^4.0.3",
-    "wintersmith": "^2.4.1",
+    "wintersmith": "^2.5.0",
     "yargs": "^11.1.0"
   },
   "scripts": {
@@ -49,5 +49,9 @@
     "type": "git",
     "url": "git://github.com/mozilla/pdf.js.git"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "natives": "^1.1.6",
+    "pdfjs-dist": "file:build/dist"
+  }
 }

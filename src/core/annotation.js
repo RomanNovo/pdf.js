@@ -83,6 +83,8 @@ class AnnotationFactory {
             return new ButtonWidgetAnnotation(parameters);
           case 'Ch':
             return new ChoiceWidgetAnnotation(parameters);
+          case 'Sig':
+            return new SignatureWidgetAnnotation(parameters);
         }
         warn('Unimplemented widget field type "' + fieldType + '", ' +
              'falling back to base field type.');
@@ -615,7 +617,7 @@ class WidgetAnnotation extends Annotation {
 
     // Hide signatures because we cannot validate them.
     if (data.fieldType === 'Sig') {
-      this.setFlags(AnnotationFlag.HIDDEN);
+      //this.setFlags(AnnotationFlag.HIDDEN);
     }
   }
 
@@ -834,6 +836,17 @@ class ButtonWidgetAnnotation extends WidgetAnnotation {
       resultObj: this.data,
       docBaseUrl: params.pdfManager.docBaseUrl,
     });
+  }
+}
+
+class SignatureWidgetAnnotation extends WidgetAnnotation {
+  constructor(params) {
+    super(params);
+
+    const dict = params.dict;
+    console.log('signature params', this);
+
+
   }
 }
 
