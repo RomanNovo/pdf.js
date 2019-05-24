@@ -20,10 +20,10 @@ import {
   AnnotationBorderStyleType, AnnotationFieldFlag, AnnotationFlag,
   AnnotationType, stringToBytes, stringToUTF8String
 } from '../../src/shared/util';
+import { createIdFactory, XRefMock } from './test_utils';
 import { Dict, Name, Ref } from '../../src/core/primitives';
 import { Lexer, Parser } from '../../src/core/parser';
 import { StringStream } from '../../src/core/stream';
-import { XRefMock } from './test_utils';
 
 describe('annotation', function() {
   class PDFManagerMock {
@@ -43,26 +43,13 @@ describe('annotation', function() {
     }
   }
 
-  class IdFactoryMock {
-    constructor(params) {
-      this.uniquePrefix = params.prefix || 'p0_';
-      this.idCounters = {
-        obj: params.startObjId || 0,
-      };
-    }
-
-    createObjId() {
-      return this.uniquePrefix + (++this.idCounters.obj);
-    }
-  }
-
   let pdfManagerMock, idFactoryMock;
 
   beforeAll(function(done) {
     pdfManagerMock = new PDFManagerMock({
       docBaseUrl: null,
     });
-    idFactoryMock = new IdFactoryMock({ });
+    idFactoryMock = createIdFactory(/* pageIndex = */ 0);
     done();
   });
 
@@ -97,10 +84,7 @@ describe('annotation', function() {
       annotationDict.set('Subtype', Name.get('Link'));
 
       const xref = new XRefMock();
-      const idFactory = new IdFactoryMock({
-        prefix: 'p0_',
-        startObjId: 0,
-      });
+      const idFactory = createIdFactory(/* pageIndex = */ 0);
 
       const annotation1 = AnnotationFactory.create(xref, annotationDict,
           pdfManagerMock, idFactory).then(({ data, }) => {
@@ -145,6 +129,34 @@ describe('annotation', function() {
 
     afterAll(function() {
       dict = ref = null;
+    });
+
+    it('should set and get a valid creation date', function() {
+      const annotation = new Annotation({ dict, ref, });
+      annotation.setCreationDate('D:20190422');
+
+      expect(annotation.creationDate).toEqual('D:20190422');
+    });
+
+    it('should set and get an invalid creation date', function() {
+      const annotation = new Annotation({ dict, ref, });
+      annotation.setCreationDate(undefined);
+
+      expect(annotation.creationDate).toEqual(null);
+    });
+
+    it('should set and get a valid modification date', function() {
+      const annotation = new Annotation({ dict, ref, });
+      annotation.setModificationDate('D:20190422');
+
+      expect(annotation.modificationDate).toEqual('D:20190422');
+    });
+
+    it('should set and get an invalid modification date', function() {
+      const annotation = new Annotation({ dict, ref, });
+      annotation.setModificationDate(undefined);
+
+      expect(annotation.modificationDate).toEqual(null);
     });
 
     it('should set and get flags', function() {
@@ -234,6 +246,17 @@ describe('annotation', function() {
       borderStyle.setWidth('three');
 
       expect(borderStyle.width).toEqual(1);
+    });
+
+    it('should set the width to zero, when the input is a `Name` (issue 10385)',
+        function() {
+      const borderStyleZero = new AnnotationBorderStyle();
+      borderStyleZero.setWidth(Name.get('0'));
+      const borderStyleFive = new AnnotationBorderStyle();
+      borderStyleFive.setWidth(Name.get('5'));
+
+      expect(borderStyleZero.width).toEqual(0);
+      expect(borderStyleFive.width).toEqual(0);
     });
 
     it('should set and get a valid style', function() {
@@ -975,7 +998,7 @@ describe('annotation', function() {
 
             // Remove the last invalid flag for the next iteration.
             if (!valid) {
-              flags -= invalidFieldFlags.splice(-1, 1);
+              flags -= invalidFieldFlags.pop();
             }
           });
         });
@@ -1405,6 +1428,59 @@ describe('annotation', function() {
   });
 
   describe('PopupAnnotation', function() {
+    it('should inherit properties from its parent', function(done) {
+      const parentDict = new Dict();
+      parentDict.set('Type', Name.get('Annot'));
+      parentDict.set('Subtype', Name.get('Text'));
+      parentDict.set('CreationDate', 'D:20190422');
+      parentDict.set('M', 'D:20190423');
+      parentDict.set('C', [0, 0, 1]);
+
+      const popupDict = new Dict();
+      popupDict.set('Type', Name.get('Annot'));
+      popupDict.set('Subtype', Name.get('Popup'));
+      popupDict.set('Parent', parentDict);
+
+      const popupRef = new Ref(13, 0);
+      const xref = new XRefMock([
+        { ref: popupRef, data: popupDict, }
+      ]);
+
+      AnnotationFactory.create(xref, popupRef, pdfManagerMock,
+          idFactoryMock).then(({ data, viewable, }) => {
+        expect(data.annotationType).toEqual(AnnotationType.POPUP);
+        expect(data.creationDate).toEqual('D:20190422');
+        expect(data.modificationDate).toEqual('D:20190423');
+        expect(data.color).toEqual(new Uint8ClampedArray([0, 0, 255]));
+        done();
+      }, done.fail);
+    });
+
+    it('should handle missing parent properties', function(done) {
+      const parentDict = new Dict();
+      parentDict.set('Type', Name.get('Annot'));
+      parentDict.set('Subtype', Name.get('Text'));
+
+      const popupDict = new Dict();
+      popupDict.set('Type', Name.get('Annot'));
+      popupDict.set('Subtype', Name.get('Popup'));
+      popupDict.set('Parent', parentDict);
+
+      const popupRef = new Ref(13, 0);
+      const xref = new XRefMock([
+        { ref: popupRef, data: popupDict, }
+      ]);
+
+      AnnotationFactory.create(xref, popupRef, pdfManagerMock,
+          idFactoryMock).then(({ data, viewable, }) => {
+        expect(data.annotationType).toEqual(AnnotationType.POPUP);
+        expect(data.creationDate).toEqual(null);
+        expect(data.modificationDate).toEqual(null);
+        expect(data.color).toEqual(null);
+        done();
+      }, done.fail);
+    });
+
     it('should inherit the parent flags when the Popup is not viewable, ' +
        'but the parent is (PR 7352)', function(done) {
       const parentDict = new Dict();

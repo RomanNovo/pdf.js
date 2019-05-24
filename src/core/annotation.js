@@ -12,15 +12,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/* eslint no-var: error */
 
 import {
   AnnotationBorderStyleType, AnnotationFieldFlag, AnnotationFlag,
-  AnnotationType, getInheritableProperty, OPS, stringToBytes, stringToPDFString,
-  Util, warn
+  AnnotationType, isString, OPS, stringToBytes, stringToPDFString, Util, warn
 } from '../shared/util';
 import { Catalog, FileSpec, ObjectLoader } from './obj';
 import { Dict, isDict, isName, isRef, isStream } from './primitives';
 import { ColorSpace } from './colorspace';
+import { getInheritableProperty } from './core_utils';
 import { OperatorList } from './operator_list';
 import { Stream } from './stream';
 
@@ -47,9 +48,9 @@ class AnnotationFactory {
   static _create(xref, ref, pdfManager, idFactory) {
     let dict = xref.fetchIfRef(ref);
     if (!isDict(dict)) {
-      return;
+      return undefined;
     }
-    let id = isRef(ref) ? ref.toString() : 'annot_' + idFactory.createObjId();
+    let id = isRef(ref) ? ref.toString() : `annot_${idFactory.createObjId()}`;
 
     // Determine the annotation's subtype.
     let subtype = dict.get('Subtype');
@@ -59,7 +60,6 @@ class AnnotationFactory {
     let parameters = {
       xref,
       dict,
-      ref: isRef(ref) ? ref : null,
       subtype,
       id,
       pdfManager,
@@ -93,6 +93,9 @@ class AnnotationFactory {
       case 'Popup':
         return new PopupAnnotation(parameters);
 
+      case 'FreeText':
+        return new FreeTextAnnotation(parameters);
+
       case 'Line':
         return new LineAnnotation(parameters);
 
@@ -107,6 +110,9 @@ class AnnotationFactory {
 
       case 'Polygon':
         return new PolygonAnnotation(parameters);
+
+      case 'Caret':
+        return new CaretAnnotation(parameters);
 
       case 'Ink':
         return new InkAnnotation(parameters);
@@ -171,6 +177,8 @@ class Annotation {
   constructor(params) {
     let dict = params.dict;
 
+    this.setCreationDate(dict.get('CreationDate'));
+    this.setModificationDate(dict.get('M'));
     this.setFlags(dict.get('F'));
     this.setRectangle(dict.getArray('Rect'));
     this.setColor(dict.getArray('C'));
@@ -182,8 +190,10 @@ class Annotation {
       annotationFlags: this.flags,
       borderStyle: this.borderStyle,
       color: this.color,
+      creationDate: this.creationDate,
       hasAppearance: !!this.appearance,
       id: params.id,
+      modificationDate: this.modificationDate,
       rect: this.rectangle,
       subtype: params.subtype,
     };
@@ -232,6 +242,31 @@ class Annotation {
       return false;
     }
     return this._isPrintable(this.flags);
+  }
+
+  /**
+   * Set the creation date.
+   *
+   * @public
+   * @memberof Annotation
+   * @param {string} creationDate - PDF date string that indicates when the
+   *                                annotation was originally created
+   */
+  setCreationDate(creationDate) {
+    this.creationDate = isString(creationDate) ? creationDate : null;
+  }
+
+  /**
+   * Set the modification date.
+   *
+   * @public
+   * @memberof Annotation
+   * @param {string} modificationDate - PDF date string that indicates when the
+   *                                    annotation was last modified
+   */
+  setModificationDate(modificationDate) {
+    this.modificationDate = isString(modificationDate) ?
+                            modificationDate : null;
   }
 
   /**
@@ -395,28 +430,10 @@ class Annotation {
     this.appearance = normalAppearanceState.get(as.name);
   }
 
-  /**
-   * Prepare the annotation for working with a popup in the display layer.
-   *
-   * @private
-   * @memberof Annotation
-   * @param {Dict} dict - The annotation's data dictionary
-   */
-  _preparePopup(dict) {
-    if (!dict.has('C')) {
-      // Fall back to the default background color.
-      this.data.color = null;
-    }
-
-    this.data.hasPopup = dict.has('Popup');
-    this.data.title = stringToPDFString(dict.get('T') || '');
-    this.data.contents = stringToPDFString(dict.get('Contents') || '');
-  }
-
   loadResources(keys) {
     return this.appearance.dict.getAsync('Resources').then((resources) => {
       if (!resources) {
-        return;
+        return undefined;
       }
       let objectLoader = new ObjectLoader(resources, keys, resources.xref);
 
@@ -484,6 +501,12 @@ class AnnotationBorderStyle {
    * @param {integer} width - The width
    */
   setWidth(width) {
+    // Some corrupt PDF generators may provide the width as a `Name`,
+    // rather than as a number (fixes issue 10385).
+    if (isName(width)) {
+      this.width = 0; // This is consistent with the behaviour in Adobe Reader.
+      return;
+    }
     if (Number.isInteger(width)) {
       this.width = width;
     }
@@ -494,11 +517,11 @@ class AnnotationBorderStyle {
    *
    * @public
    * @memberof AnnotationBorderStyle
-   * @param {Object} style - The style object
+   * @param {Name} style - The annotation style.
    * @see {@link shared/util.js}
    */
   setStyle(style) {
-    if (!style) {
+    if (!isName(style)) {
       return;
     }
     switch (style.name) {
@@ -590,6 +613,22 @@ class AnnotationBorderStyle {
   }
 }
 
+class MarkupAnnotation extends Annotation {
+  constructor(parameters) {
+    super(parameters);
+    const dict = parameters.dict;
+
+    if (!dict.has('C')) {
+      // Fall back to the default background color.
+      this.data.color = null;
+    }
+
+    this.data.hasPopup = dict.has('Popup');
+    this.data.title = stringToPDFString(dict.get('T') || '');
+    this.data.contents = stringToPDFString(dict.get('Contents') || '');
+  }
+}
+
 class WidgetAnnotation extends Annotation {
   constructor(params) {
     super(params);
@@ -615,9 +654,12 @@ class WidgetAnnotation extends Annotation {
 
     data.readOnly = this.hasFieldFlag(AnnotationFieldFlag.READONLY);
 
-    // Hide signatures because we cannot validate them.
+    // Hide signatures because we cannot validate them, and unset the fieldValue
+    // since it's (most likely) a `Dict` which is non-serializable and will thus
+    // cause errors when sending annotations to the main-thread (issue 10347).
     if (data.fieldType === 'Sig') {
-      //this.setFlags(AnnotationFlag.HIDDEN);
+      data.fieldValue = null;
+      this.setFlags(AnnotationFlag.HIDDEN);
     }
   }
 
@@ -893,7 +935,7 @@ class ChoiceWidgetAnnotation extends WidgetAnnotation {
   }
 }
 
-class TextAnnotation extends Annotation {
+class TextAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     const DEFAULT_ICON_SIZE = 22; // px
 
@@ -909,7 +951,7 @@ class TextAnnotation extends Annotation {
       this.data.name = parameters.dict.has('Name') ?
                        parameters.dict.get('Name').name : 'Note';
     }
-    this._preparePopup(parameters.dict);
+
   }
 }
 
@@ -946,6 +988,20 @@ class PopupAnnotation extends Annotation {
     this.data.title = stringToPDFString(parentItem.get('T') || '');
     this.data.contents = stringToPDFString(parentItem.get('Contents') || '');
 
+    if (!parentItem.has('CreationDate')) {
+      this.data.creationDate = null;
+    } else {
+      this.setCreationDate(parentItem.get('CreationDate'));
+      this.data.creationDate = this.creationDate;
+    }
+
+    if (!parentItem.has('M')) {
+      this.data.modificationDate = null;
+    } else {
+      this.setModificationDate(parentItem.get('M'));
+      this.data.modificationDate = this.modificationDate;
+    }
+
     if (!parentItem.has('C')) {
       // Fall back to the default background color.
       this.data.color = null;
@@ -966,7 +1022,15 @@ class PopupAnnotation extends Annotation {
   }
 }
 
-class LineAnnotation extends Annotation {
+class FreeTextAnnotation extends MarkupAnnotation {
+  constructor(parameters) {
+    super(parameters);
+
+    this.data.annotationType = AnnotationType.FREETEXT;
+  }
+}
+
+class LineAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
@@ -974,29 +1038,26 @@ class LineAnnotation extends Annotation {
 
     let dict = parameters.dict;
     this.data.lineCoordinates = Util.normalizeRect(dict.getArray('L'));
-    this._preparePopup(dict);
   }
 }
 
-class SquareAnnotation extends Annotation {
+class SquareAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.SQUARE;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class CircleAnnotation extends Annotation {
+class CircleAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.CIRCLE;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class PolylineAnnotation extends Annotation {
+class PolylineAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
@@ -1015,8 +1076,6 @@ class PolylineAnnotation extends Annotation {
         y: rawVertices[i + 1],
       });
     }
-
-    this._preparePopup(dict);
   }
 }
 
@@ -1029,7 +1088,15 @@ class PolygonAnnotation extends PolylineAnnotation {
   }
 }
 
-class InkAnnotation extends Annotation {
+class CaretAnnotation extends MarkupAnnotation {
+  constructor(parameters) {
+    super(parameters);
+
+    this.data.annotationType = AnnotationType.CARET;
+  }
+}
+
+class InkAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
@@ -1053,56 +1120,50 @@ class InkAnnotation extends Annotation {
         });
       }
     }
-    this._preparePopup(dict);
   }
 }
 
-class HighlightAnnotation extends Annotation {
+class HighlightAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.HIGHLIGHT;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class UnderlineAnnotation extends Annotation {
+class UnderlineAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.UNDERLINE;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class SquigglyAnnotation extends Annotation {
+class SquigglyAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.SQUIGGLY;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class StrikeOutAnnotation extends Annotation {
+class StrikeOutAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.STRIKEOUT;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class StampAnnotation extends Annotation {
+class StampAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
     this.data.annotationType = AnnotationType.STAMP;
-    this._preparePopup(parameters.dict);
   }
 }
 
-class FileAttachmentAnnotation extends Annotation {
+class FileAttachmentAnnotation extends MarkupAnnotation {
   constructor(parameters) {
     super(parameters);
 
@@ -1110,7 +1171,6 @@ class FileAttachmentAnnotation extends Annotation {
 
     this.data.annotationType = AnnotationType.FILEATTACHMENT;
     this.data.file = file.serializable;
-    this._preparePopup(parameters.dict);
   }
 }
 
